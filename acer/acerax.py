@@ -7,15 +7,16 @@ import torch
 import torch as th
 from torch.nn import functional as F
 
+
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, \
-    TrainFrequencyUnit
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
-from .policies import ActorCriticPolicy
-from .acer_utils.replay_buffer import ACERReplayBuffer
+from stable_baselines3.common.policies import ActorCriticPolicy
+from .acaerax_policies import ACERAXActorCriticPolicy
+from .acer_utils.replay_buffer import ACERAXReplayBuffer
 
 
 def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -> List[th.Tensor]:
@@ -30,11 +31,11 @@ def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -
     return [param for name, param in model.state_dict().items() if any([key in name for key in included_names])]
 
 
-class ACER(OffPolicyAlgorithm):
+class ACERAX(OffPolicyAlgorithm):
     # defaultowe parametry ustawić
     def __init__(
             self,
-            policy: Union[str, Type[ActorCriticPolicy]],
+            policy: Union[str, Type[ACERAXActorCriticPolicy]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 1e-3,
             buffer_size: int = 1_000_000,  # 1e6
@@ -44,7 +45,7 @@ class ACER(OffPolicyAlgorithm):
             train_freq: Union[int, Tuple[int, str]] = (1, "episode"),
             gradient_steps: int = -1,
             action_noise: Optional[ActionNoise] = None,
-            replay_buffer_class: Optional[ACERReplayBuffer] = ACERReplayBuffer,
+            replay_buffer_class: Optional[ACERAXReplayBuffer] = ACERAXReplayBuffer,
             replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
             optimize_memory_usage: bool = False,
             tensorboard_log: Optional[str] = None,
@@ -57,10 +58,14 @@ class ACER(OffPolicyAlgorithm):
             lam: float = 0.1,
             b: float = 3,
             c: int = 10,
-            c0: float = 0.3
+            c0: float = 0.3,
+            alpha_loss: float = 1.,
+            std_net_bias: float = -1,
+            weights_multiplier: float = 1e-1,
+            std_net_regularizer: float = 10.0,
+            actor_layers_std=20
     ):
-
-        super(ACER, self).__init__(
+        super(ACERAX, self).__init__(
             policy,
             env,
             ActorCriticPolicy,
@@ -89,6 +94,10 @@ class ACER(OffPolicyAlgorithm):
         self._b = b
         self._c = c
         self._c0 = c0
+        self.alpha_loss = alpha_loss
+        self.std_net_bias = std_net_bias
+        self.std_net_regularizer = std_net_regularizer
+        self.weights_multiplier = weights_multiplier
         print(self.train_freq)
         if _init_setup_model:
             self._setup_model()
@@ -103,6 +112,7 @@ class ACER(OffPolicyAlgorithm):
         actor_losses, critic_losses = [], []
 
         for _ in range(gradient_steps):
+
             self._n_updates += 1
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
@@ -120,8 +130,9 @@ class ACER(OffPolicyAlgorithm):
             gamma_coeffs = th.ones_like(truncated_densities) * self.gamma
             # gamma_coeffs = th.cumprod(gamma_coeffs, dim=1)
 
-            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
-            #     1) * truncated_densities
+
+            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(1) * truncated_densities
+            # # d = th.sum(d_coeffs, dim=1)
             # actor_loss = self._actor_loss(replay_data.observations, replay_data.action_probs, d_coeffs)
             # critic_loss = self._critic_loss(values, d_coeffs)
 
@@ -133,6 +144,7 @@ class ACER(OffPolicyAlgorithm):
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
 
+            dispersion_loss = self._dispersion_loss(replay_data.observations, replay_data.actions, replay_data.means)
             loss = actor_loss + critic_loss
 
             # Optimization step
@@ -143,10 +155,24 @@ class ACER(OffPolicyAlgorithm):
             # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
+
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         if len(actor_losses) > 0:
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
+
+    def _dispersion_loss(self, observations: np.array, actions: np.array, m: np.array) -> th.Tensor:
+        dist = self.policy.get_distribution(th.tensor(observations).to(self.device))
+        log_std = self.policy.get_dispersion(th.tensor(observations).to(self.device))
+        with th.no_grad():
+            mean = dist.mode()
+        std = th.exp(log_std)
+        alpha = self.alpha_loss
+        no_alpha = th.sum( 0.5 * th.square((m - mean) * th.reciprocal(th.exp(std))))
+        with_alpha = th.sum( 0.5 * th.square((actions - mean) * th.reciprocal(th.exp(std))))
+        total_loss = no_alpha + alpha * with_alpha + (1 + alpha) * th.sum(std)
+        return total_loss
+
 
     def _actor_loss(self, observations: th.Tensor, log_probs: th.Tensor, d: th.Tensor) -> th.Tensor:
         # mean = self.policy.get_distribution(observations).mean_actions
@@ -161,8 +187,10 @@ class ACER(OffPolicyAlgorithm):
         #                 ) # scale actions so this is not necessary
 
         # total_loss = th.mean(-log_probs*d + bounds_penalty)
+
         total_loss = th.mean(-log_probs * d)
         return total_loss
+
 
     def _critic_loss(self, values: th.Tensor, d: th.Tensor) -> th.Tensor:
         loss = th.mean(values * d)
@@ -176,7 +204,7 @@ class ACER(OffPolicyAlgorithm):
             eval_env: Optional[GymEnv] = None,
             eval_freq: int = -1,
             n_eval_episodes: int = 5,
-            tb_log_name: str = "ACER",
+            tb_log_name: str = "ACERAX",
             eval_log_path: Optional[str] = None,
             reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
@@ -223,14 +251,14 @@ class ACER(OffPolicyAlgorithm):
         return self
 
     def collect_rollouts(
-            self,
-            env: VecEnv,
-            callback: BaseCallback,
-            train_freq: TrainFreq,
-            replay_buffer: ACERReplayBuffer,
-            action_noise: Optional[ActionNoise] = None,
-            learning_starts: int = 0,
-            log_interval: Optional[int] = None,
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        train_freq: TrainFreq,
+        replay_buffer: ACERAXReplayBuffer,
+        action_noise: Optional[ActionNoise] = None,
+        learning_starts: int = 0,
+        log_interval: Optional[int] = None,
     ) -> RolloutReturn:
         """
         Collect experiences and store them into a ``ReplayBuffer``.
@@ -283,6 +311,7 @@ class ACER(OffPolicyAlgorithm):
             with th.no_grad():
                 _, log_prob, _ = self.policy.evaluate_actions(th.tensor(self._last_obs).to(self.device),
                                                               th.tensor(buffer_actions).to(self.device))
+                means = self.policy.get_distribution(th.tensor(self._last_obs).to(self.device)).mode()
             # Rescale and perform action
             new_obs, rewards, dones, infos = env.step(actions)
 
@@ -293,14 +322,13 @@ class ACER(OffPolicyAlgorithm):
             callback.update_locals(locals())
             # Only stop training if return value is False, not when it is None.
             if callback.on_step() is False:
-                return RolloutReturn(num_collected_steps * env.num_envs, num_collected_episodes,
-                                     continue_training=False)
+                return RolloutReturn(num_collected_steps * env.num_envs, num_collected_episodes, continue_training=False)
 
             # Retrieve reward and episode length if using Monitor wrapper
             self._update_info_buffer(infos, dones)
 
             # Store data in replay buffer (normalized action and unnormalized observation)
-            self._store_transition(replay_buffer, buffer_actions, new_obs, log_prob.cpu(), rewards, dones, infos)
+            self._store_transition(replay_buffer, buffer_actions, new_obs, log_prob.cpu(), rewards, dones, means.cpu(), infos)
 
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
@@ -329,14 +357,15 @@ class ACER(OffPolicyAlgorithm):
         return RolloutReturn(num_collected_steps * env.num_envs, num_collected_episodes, continue_training)
 
     def _store_transition(
-            self,
-            replay_buffer: ACERReplayBuffer,
-            buffer_action: np.ndarray,
-            new_obs: Union[np.ndarray, Dict[str, np.ndarray]],
-            action_probs: np.ndarray,  # acer needed
-            reward: np.ndarray,
-            dones: np.ndarray,
-            infos: List[Dict[str, Any]],
+        self,
+        replay_buffer: ACERAXReplayBuffer,
+        buffer_action: np.ndarray,
+        new_obs: Union[np.ndarray, Dict[str, np.ndarray]],
+        action_probs: np.ndarray, # acer needed
+        reward: np.ndarray,
+        dones: np.ndarray,
+        means: np.ndarray,
+        infos: List[Dict[str, Any]],
     ) -> None:
         """
         Store transition in the replay buffer.
@@ -387,7 +416,8 @@ class ACER(OffPolicyAlgorithm):
             action_probs,
             reward_,
             dones,
-            infos,
+            means,
+            infos
         )
 
         self._last_obs = new_obs
