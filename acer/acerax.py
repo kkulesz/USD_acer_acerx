@@ -16,7 +16,7 @@ from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.policies import ActorCriticPolicy
 from .acaerax_policies import ACERAXActorCriticPolicy
-from .acer_utils.replay_buffer import ACERAXReplayBuffer
+from .acer_utils.acerax_replay_buffer import ACERAXReplayBuffer
 
 
 def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -> List[th.Tensor]:

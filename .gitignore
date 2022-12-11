@@ -131,3 +131,4 @@ dmypy.json
 *.zip
 .idea
 MUJOCO_LOG.TXT
+logs

@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, Generator, List, Optional, Union, NamedTuple, Tuple
+from typing import Any, Dict, Generator, List, Optional, Union, NamedTuple
 
 import numpy as np
 import torch as th
@@ -139,67 +139,45 @@ class ACERReplayBuffer(ReplayBuffer):
             self.full = True
             self.pos = 0
 
-    def _get_samples(self, batch_inds: np.ndarray, lens: np.ndarray, env: Optional[VecNormalize] = None) -> Tuple[
-        ACERReplayBufferSamples, th.Tensor]:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ACERReplayBufferSamples:
+        """
+        Sample elements from the replay buffer.
+        Custom sampling when using memory efficient variant,
+        as we should not sample the element with index `self.pos`
+        See https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
+
+        :param batch_size: Number of element to sample
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return:
+        """
+        if not self.optimize_memory_usage:
+            return super().sample(batch_size=batch_size, env=env)
+        # Do not sample the element with index `self.pos` as the transitions is invalid
+        # (we use only one array to store `obs` and `next_obs`)
+        if self.full:
+            batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos) % self.buffer_size
+        else:
+            batch_inds = np.random.randint(0, self.pos, size=batch_size)
+        return self._get_samples(batch_inds, env=env)
+
+    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> ACERReplayBufferSamples:
         # Sample randomly the env idx
-        env_indices = np.random.randint(0, high=self.n_envs, size=batch_inds.shape)
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
         if self.optimize_memory_usage:
             next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env)
         else:
             next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
 
-        dones = (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices]))
-        data = [
+        data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
             self.actions[batch_inds, env_indices, :],
             self.action_probs[batch_inds, env_indices],
             next_obs,
             # Only use dones that are not due to timeouts
             # deactivated by default (timeouts is initialized as an array of False)
-            dones,
-            self._normalize_reward(self.rewards[batch_inds, env_indices], env),
-        ]
-
-        ends_mask = np.cumsum(dones[:, :-1], axis=1) == 0
-
-        mask = np.concatenate([np.ones((batch_inds.shape[0], 1)), ends_mask], axis=1)
-        for i in range(len(data)):
-            m = mask
-            while len(m.shape) < len(data[i].shape):
-                m = np.expand_dims(m, axis=-1)
-            data[i] *= m
-        lens = np.minimum(lens, ends_mask.sum(axis=1) + 1)
-
-        return ACERReplayBufferSamples(*tuple(map(self.to_torch, data))), self.to_torch(lens)
-
-    def sample(self, length: int, trajectory_len: int) -> Tuple[ACERReplayBufferSamples, np.ndarray]:
-        if self.size() == 0:
-            # empty buffer
-            return ACERReplayBufferSamples(th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0))), np.repeat(-1, length)
-
-        sample_indices = np.random.randint(low=0, high=self.size(), size=length)
-
-        lens = np.repeat(trajectory_len, length)
-        pointer_ind = np.logical_and(sample_indices < self.pos, self.pos < sample_indices + lens)
-        lens[pointer_ind] = self.pos - sample_indices[pointer_ind]
-
-        if self.size() < self.buffer_size:
-            current_size_ind = np.logical_and(sample_indices + lens > self.size(),
-                                              self.size() < self.buffer_size)
-            lens[current_size_ind] = self.size() - sample_indices[current_size_ind]
-
-        pointer_ovf_ind = np.logical_and(sample_indices + lens > self.buffer_size,
-                                         self.pos < sample_indices + lens - self.buffer_size)
-        lens[pointer_ovf_ind] = (self.pos + self.buffer_size) - sample_indices[pointer_ovf_ind]
-
-        selection = (np.repeat(np.expand_dims(sample_indices, 1), trajectory_len, axis=1) + np.arange(trajectory_len))
-        selection = selection % self.buffer_size
-
-        batch, lens = self._get_samples(selection, lens)
-
-        return batch, lens
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+        )
+        return ACERReplayBufferSamples(*tuple(map(self.to_torch, data)))

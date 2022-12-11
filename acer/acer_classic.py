@@ -15,9 +15,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Rollout
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
 from .policies import ActorCriticPolicy
-from .acer_utils.replay_buffer import ACERReplayBuffer
-
-from torch.utils.tensorboard import SummaryWriter
+from .acer_utils.replay_buffer_classic import ACERReplayBuffer
 
 
 def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -> List[th.Tensor]:
@@ -38,10 +36,10 @@ class ACER(OffPolicyAlgorithm):
             self,
             policy: Union[str, Type[ActorCriticPolicy]],
             env: Union[GymEnv, str],
-            learning_rate: Union[float, Schedule] = 1e-4,
+            learning_rate: Union[float, Schedule] = 1e-3,
             buffer_size: int = 1_000_000,  # 1e6
             learning_starts: int = 100,
-            batch_size: int = 200,
+            batch_size: int = 100,
             gamma: float = 0.99,
             train_freq: Union[int, Tuple[int, str]] = (1, "episode"),
             gradient_steps: int = -1,
@@ -59,8 +57,7 @@ class ACER(OffPolicyAlgorithm):
             lam: float = 0.1,
             b: float = 3,
             c: int = 10,
-            c0: float = 0.3,
-            trajectory_lens: int = 10
+            c0: float = 0.3
     ):
 
         super(ACER, self).__init__(
@@ -92,20 +89,10 @@ class ACER(OffPolicyAlgorithm):
         self._b = b
         self._c = c
         self._c0 = c0
-        self._trajectory_lens = trajectory_lens
+        self.max_grad_norm = 0.5
         print(self.train_freq)
         if _init_setup_model:
             self._setup_model()
-
-    def _sequence_mask(self, lengths, maxlen=None, dtype=torch.bool):
-        if maxlen is None:
-            maxlen = lengths.max()
-        row_vector = torch.arange(0, maxlen, 1, device=lengths.device)
-        matrix = torch.unsqueeze(lengths, dim=-1)
-        mask = row_vector < matrix
-
-        mask.type(dtype)
-        return mask
 
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -118,42 +105,37 @@ class ACER(OffPolicyAlgorithm):
 
         for _ in range(gradient_steps):
             self._n_updates += 1
-            # Sample replay buffer
-            replay_data, lens = self.replay_buffer.sample(batch_size, self._trajectory_lens)
-            obs_next = replay_data.next_observations[np.arange(batch_size), lens - 1]
-            dones = replay_data.dones[np.arange(batch_size), lens - 1].bool()
 
-            dones = 1 - ((th.unsqueeze(th.arange(1, self._trajectory_lens + 1, device=lens.device), 0) == th.unsqueeze(
-                lens, 1)) & th.unsqueeze(dones, 1)).float()
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
-            values_next = self.policy.predict_values(obs_next) * dones
-            flat_obs = replay_data.observations.reshape(-1, replay_data.observations.shape[-1])
-            flat_actions = replay_data.actions.reshape(-1, replay_data.actions.shape[-1])
+            values_next = self.policy.predict_values(replay_data.next_observations) * (1.0 - replay_data.dones)
+            values, log_prob, _ = self.policy.evaluate_actions(replay_data.observations, replay_data.actions)
 
-            values, log_prob, _ = self.policy.evaluate_actions(flat_obs, flat_actions)
-            values = values.reshape(replay_data.rewards.shape)
-            log_prob = log_prob.reshape(replay_data.rewards.shape)
-            mask = self._sequence_mask(lens, maxlen=self._trajectory_lens, dtype=th.float32)
+            policies_ratio = th.exp(log_prob) / th.exp(replay_data.action_probs)
 
-            policies_masked = log_prob * mask + (~mask) * th.ones_like(log_prob)
-            old_policies_masked = replay_data.action_probs * mask + (~mask) * th.ones_like(replay_data.action_probs)
+            b_tensor = th.ones_like(policies_ratio) * self._b
+            truncated_densities = th.minimum(policies_ratio, b_tensor)
 
-            policies_ratio = th.exp(policies_masked - old_policies_masked)
-            policies_ratio_prod = th.cumprod(policies_ratio, dim=-1)
+            gamma_coeffs = th.ones_like(truncated_densities) * self.gamma
 
-            truncated_density = th.tanh(policies_ratio_prod / self._b) * self._b
-            gamma_coeffs_masked = th.unsqueeze(
-                th.pow(self.gamma, th.arange(1, self._trajectory_lens + 1, device=mask.device)), dim=0) * mask
-            td_parts = replay_data.rewards + self.gamma * values_next - values
-            td_rewards = td_parts * gamma_coeffs_masked
-            e = th.sum(th.mul(td_rewards, truncated_density), dim=1).detach()
-            e = th.unsqueeze(e, dim=1)
 
-            actor_loss = self._actor_loss(log_prob[:, 0], e)
-            critic_loss = self._critic_loss(values[:, 0], e)
+            # to jest bardziej zgodne z wzorcową implementacją ale nie działa
+            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
+                1) * truncated_densities
+            d_coeffs = d_coeffs.detach()
+            actor_loss = th.mean(-log_prob * d_coeffs)
+            critic_loss = th.mean(-values.squeeze(1) * d_coeffs)
+
+
+            # to jest niepoprawne ale jakoś działa
+            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
+            # d = th.sum(d_coeffs, dim=1)
+            # actor_loss = th.mean(-replay_data.action_probs * d)
+            # critic_loss = th.mean(values * d)
 
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
+
             loss = actor_loss + critic_loss
 
             # Optimization step
@@ -161,7 +143,7 @@ class ACER(OffPolicyAlgorithm):
             loss.backward()
 
             # # Clip grad norm
-            # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
@@ -170,12 +152,11 @@ class ACER(OffPolicyAlgorithm):
         self.logger.record("train/critic_loss", np.mean(critic_losses))
 
     def _actor_loss(self, log_probs: th.Tensor, d: th.Tensor) -> th.Tensor:
-        total_loss = th.mean(-log_probs.unsqueeze(1) * d)
+        total_loss = th.mean(-log_probs * d)
         return total_loss
 
     def _critic_loss(self, values: th.Tensor, d: th.Tensor) -> th.Tensor:
-
-        loss = th.mean(-values.unsqueeze(1) * d)
+        loss = th.mean(values * d)
         return loss
 
     def learn(
@@ -218,7 +199,7 @@ class ACER(OffPolicyAlgorithm):
             if rollout.continue_training is False:
                 break
 
-            self.gradient_steps = min([round(self._c0 * self.num_timesteps), self._c])
+            self.gradient_steps = min([round(self._c0 * self.num_timesteps), self._c])  # trzeba było ten fragment do funkcji dodać
 
             if self.num_timesteps > 0 and self.num_timesteps > self.learning_starts:
                 # If no `gradient_steps` is specified,
@@ -289,8 +270,8 @@ class ACER(OffPolicyAlgorithm):
 
             # Select action randomly or according to policy
             actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
-            # action_prob = self.policy.get_distribution(self._last_obs).log_prob(actions)
-            with th.no_grad():
+
+            with th.no_grad(): # trzeba było dodać zapisywanie log_prob w buforze (na slajdach oznaczone jako "pi - wartość polityki"
                 _, log_prob, _ = self.policy.evaluate_actions(th.tensor(self._last_obs).to(self.device),
                                                               th.tensor(buffer_actions).to(self.device))
             # Rescale and perform action

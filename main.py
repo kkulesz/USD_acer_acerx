@@ -1,9 +1,11 @@
 import torch
 import gym
-from acer.acer import ACER
+from acer.acer_classic import ACER
+# from acer.acer_fromppo import ACER
 from acer.acerax import ACERAX
 from stable_baselines3.a2c import A2C
 from stable_baselines3.ppo import PPO
+from stable_baselines3.sac import SAC
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.policies import _policy_registry
 
@@ -11,8 +13,8 @@ def main():
     print(torch.__version__)
     print(gym.__version__)
 
-    train_model(model_path='acerax_ant', algorithm=ACERAX, policy="ACERAXMlpPolicy")
-    visualize_model(saved_model_path='acerax_ant', algorithm=ACERAX)
+    train_model(model_path='acerax_ant', algorithm=ACER, policy="MlpPolicy")
+    visualize_model(saved_model_path='acerax_ant', algorithm=ACER)
 
 
 
@@ -21,6 +23,7 @@ def train_model(env_name="Ant-v2", model_path="a2c_ant", algorithm=A2C, policy="
     env = gym.make(env_name)
     model = algorithm(policy, env, verbose=1)
     model.learn(total_timesteps=int(2e5))
+
     model.save(model_path)
 
 
