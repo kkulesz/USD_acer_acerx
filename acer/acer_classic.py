@@ -120,18 +120,18 @@ class ACER(OffPolicyAlgorithm):
 
 
             # to jest bardziej zgodne z wzorcową implementacją ale nie działa
-            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
-                1) * truncated_densities
-            d_coeffs = d_coeffs.detach()
-            actor_loss = th.mean(-log_prob * d_coeffs)
-            critic_loss = th.mean(-values.squeeze(1) * d_coeffs)
+            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
+            #     1) * truncated_densities
+            # d_coeffs = th.sum(d_coeffs.detach())
+            # actor_loss = th.mean(log_prob * d_coeffs)
+            # critic_loss = th.mean(-values * d_coeffs)
 
 
             # to jest niepoprawne ale jakoś działa
-            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
-            # d = th.sum(d_coeffs, dim=1)
-            # actor_loss = th.mean(-replay_data.action_probs * d)
-            # critic_loss = th.mean(values * d)
+            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
+            d = th.sum(d_coeffs, dim=1)
+            actor_loss = th.mean(-replay_data.action_probs * d)
+            critic_loss = th.mean(values * d)
 
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())

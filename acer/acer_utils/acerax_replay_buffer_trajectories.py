@@ -16,16 +16,16 @@ except ImportError:
     psutil = None
 
 
-class ACERReplayBufferSamples(NamedTuple):
+class ACERAXReplayBufferSamples(NamedTuple):
     observations: th.Tensor
     actions: th.Tensor
-    log_probs: th.Tensor
+    action_probs: th.Tensor
+    action_means: th.Tensor
     next_observations: th.Tensor
     dones: th.Tensor
     rewards: th.Tensor
 
-
-class ACERReplayBuffer:
+class ACERAXReplayBuffer:
     """
     Replay buffer used in off-policy algorithms like SAC/TD3.
 
@@ -91,6 +91,10 @@ class ACERReplayBuffer:
             buffer_part_shape + (self.action_dim,), dtype=action_space.dtype
         )
 
+        self.action_means = np.zeros(
+            buffer_part_shape + (self.action_dim,), dtype=action_space.dtype
+        )
+
         self.log_probs = np.zeros(buffer_part_shape, dtype=np.float32)
         self.rewards = np.zeros(buffer_part_shape, dtype=np.float32)
         self.dones = np.zeros(buffer_part_shape, dtype=np.float32)
@@ -102,6 +106,7 @@ class ACERReplayBuffer:
                 + self.log_probs.nbytes
                 + self.rewards.nbytes
                 + self.dones.nbytes
+                + self.action_means.nbytes
             )
 
             if self.next_observations is not None:
@@ -122,6 +127,7 @@ class ACERReplayBuffer:
         next_obs: np.ndarray,
         action: np.ndarray,
         log_prob: np.ndarray,
+        means: np.ndarray,
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
@@ -134,6 +140,7 @@ class ACERReplayBuffer:
 
         # Same, for actions
         action = action.reshape((self.n_envs, self.action_dim))
+        means = means.reshape((self.n_envs, self.action_dim))
 
         # Copy to avoid modification by reference
         self.observations[self.trajectory_idx, self.trajectory_pos] = np.array(
@@ -148,6 +155,7 @@ class ACERReplayBuffer:
             ).copy()
 
         self.actions[self.trajectory_idx, self.trajectory_pos] = np.array(action).copy()
+        self.action_means[self.trajectory_idx, self.trajectory_pos] = np.array(means).copy()
         self.log_probs[self.trajectory_idx, self.trajectory_pos] = np.array(
             log_prob
         ).copy()
@@ -164,7 +172,7 @@ class ACERReplayBuffer:
 
     def sample(
         self, batch_size: int, trajectory_size: int, env: Optional[VecNormalize] = None
-    ) -> ACERReplayBufferSamples:
+    ) -> ACERAXReplayBufferSamples:
         """
         Sample elements from the replay buffer.
         Custom sampling when using memory efficient variant,
@@ -244,6 +252,7 @@ class ACERReplayBuffer:
             ),
             self.actions[trajectory_inds, trajectory_positions, env_indices, :],
             self.log_probs[trajectory_inds, trajectory_positions, env_indices],
+            self.action_means[trajectory_inds, trajectory_positions, env_indices, :],
             next_obs,
             (self.dones[trajectory_inds, trajectory_positions, env_indices])[
                 ..., np.newaxis
@@ -255,7 +264,7 @@ class ACERReplayBuffer:
                 env,
             ),
         )
-        return ACERReplayBufferSamples(*tuple(map(self.to_torch, data)))
+        return ACERAXReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
     @staticmethod
     def _normalize_obs(
