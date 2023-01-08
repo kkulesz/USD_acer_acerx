@@ -59,11 +59,9 @@ class Actor(BasePolicy):
         features_extractor: nn.Module,
         features_dim: int,
         activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
         log_std_init: float = -3,
         full_std: bool = True,
-        std_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
+        std_net_arch: Optional[List[int]] = [20],
         clip_mean: float = 2.0,
         normalize_images: bool = True,
     ):
@@ -76,14 +74,10 @@ class Actor(BasePolicy):
         )
 
         # Save arguments to re-create object at loading
-        self.use_sde = use_sde
-        self.sde_features_extractor = None
         self.net_arch = net_arch
         self.features_dim = features_dim
         self.activation_fn = activation_fn
         self.log_std_init = log_std_init
-        self.sde_net_arch = sde_net_arch
-        self.use_expln = use_expln
         self.full_std = full_std
         self.clip_mean = clip_mean
 
@@ -94,10 +88,11 @@ class Actor(BasePolicy):
 
         latent_std_net = create_mlp(features_dim, -1, std_net_arch, activation_fn)
         self.latent_std = nn.Sequential(*latent_std_net)
+        last_layer_dim_std = std_net_arch[-1] if len(std_net_arch) > 0 else features_dim
 
         self.action_dist = SquashedDiagGaussianDistribution(action_dim)
         self.mu = nn.Linear(last_layer_dim, action_dim)
-        self.log_std = nn.Linear(last_layer_dim, action_dim)
+        self.log_std = nn.Linear(last_layer_dim_std, action_dim)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
@@ -107,10 +102,8 @@ class Actor(BasePolicy):
                 net_arch=self.net_arch,
                 features_dim=self.features_dim,
                 activation_fn=self.activation_fn,
-                use_sde=self.use_sde,
                 log_std_init=self.log_std_init,
                 full_std=self.full_std,
-                use_expln=self.use_expln,
                 features_extractor=self.features_extractor,
                 clip_mean=self.clip_mean,
             )
@@ -132,7 +125,8 @@ class Actor(BasePolicy):
         mean_actions = self.mu(latent_pi)
 
         # Unstructured exploration (Original implementation)
-        log_std = self.log_std(latent_pi)
+        latent_std = self.latent_std(features)
+        log_std = self.log_std(latent_std)
         # Original Implementation to cap the standard deviation
         log_std = th.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         return mean_actions, log_std, {}
@@ -156,7 +150,7 @@ class Actor(BasePolicy):
 
     def get_distribution(self, obs: th.Tensor) -> Distribution:
         mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
-        return self.action_dist.proba_distribution(mean_actions, log_std, **kwargs)
+        return self.action_dist.proba_distribution(mean_actions, log_std.detach(), **kwargs)
 
     def _predict(
         self, observation: th.Tensor, deterministic: bool = False
@@ -203,10 +197,7 @@ class ACERAXPolicy(BasePolicy):
         lr_schedule: Union[Schedule, Tuple[Schedule, Schedule]],
         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
         log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
         clip_mean: float = 2.0,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
@@ -242,18 +233,12 @@ class ACERAXPolicy(BasePolicy):
         }
         self.actor_kwargs = self.net_args.copy()
 
-        if sde_net_arch is not None:
-            warnings.warn(
-                "sde_net_arch is deprecated and will be removed in SB3 v2.4.0.",
-                DeprecationWarning,
-            )
 
         sde_kwargs = {
-            "use_sde": use_sde,
             "log_std_init": log_std_init,
-            "use_expln": use_expln,
             "clip_mean": clip_mean,
         }
+
         self.actor_kwargs.update(sde_kwargs)
         self.critic_kwargs = self.net_args.copy()
         self.critic_kwargs.update(
@@ -271,14 +256,14 @@ class ACERAXPolicy(BasePolicy):
         self._build(lr_schedule)
 
     def _build(self, lr_schedule: Schedule) -> None:
-        if isinstance(lr_schedule, tuple):
-            actor_schedule, critic_schedule = lr_schedule
-        else:
-            actor_schedule, critic_schedule = lr_schedule, lr_schedule
-
+        actor_schedule, std_schedule, critic_schedule = lr_schedule
         self.actor = self.make_actor()
         self.actor.optimizer = self.optimizer_class(
             self.actor.parameters(), lr=actor_schedule(1), **self.optimizer_kwargs
+        )
+        self.actor.optimizer_std = self.optimizer_class(
+            list(self.actor.latent_std.parameters()) + list(self.actor.log_std.parameters()),
+            lr=std_schedule(1), **self.optimizer_kwargs
         )
 
         if self.share_features_extractor:
@@ -307,9 +292,7 @@ class ACERAXPolicy(BasePolicy):
             dict(
                 net_arch=self.net_arch,
                 activation_fn=self.net_args["activation_fn"],
-                use_sde=self.actor_kwargs["use_sde"],
                 log_std_init=self.actor_kwargs["log_std_init"],
-                use_expln=self.actor_kwargs["use_expln"],
                 clip_mean=self.actor_kwargs["clip_mean"],
                 n_critics=self.critic_kwargs["n_critics"],
                 lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone

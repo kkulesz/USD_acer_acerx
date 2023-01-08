@@ -92,7 +92,8 @@ class ACERAX(OffPolicyAlgorithm):
             policy: Union[str, Type[ACERAXPolicy]],
             env: Union[GymEnv, str],
             lr_actor: Union[float, Schedule] = 1e-4,
-            lr_critic: Union[float, Schedule] = 1e-4,  # only usable in the ACERPolicy
+            lr_std: Union[float, Schedule] = 1e-5,
+            lr_critic: Union[float, Schedule] = 1e-5,
             buffer_num_trajectories: int = 2,
             buffer_trajectory_size: int = 1000,  # epizode len
             learning_starts: int = 1000,
@@ -163,6 +164,7 @@ class ACERAX(OffPolicyAlgorithm):
         self.alpha_loss = alpha_loss
 
         self.lr_actor = lr_actor
+        self.lr_std = lr_std
         self.lr_critic = lr_critic
         self.alpha = alpha
         self.exploration_initial_eps = exploration_initial_eps
@@ -190,17 +192,12 @@ class ACERAX(OffPolicyAlgorithm):
 
     def _setup_lr_schedule(self) -> None:
         """Transform to callable if needed."""
-        if isinstance(self.learning_rate, tuple):
-            self.actor_lr_schedule = get_schedule_fn(self.learning_rate[0])
-            self.critic_lr_schedule = get_schedule_fn(self.learning_rate[1])
-        else:
-            self.actor_lr_schedule = get_schedule_fn(self.learning_rate)
-            self.critic_lr_schedule = get_schedule_fn(self.learning_rate)
 
-        if self.policy_class == ACERAXPolicy:
-            self.lr_schedule = (self.actor_lr_schedule, self.critic_lr_schedule)
-        else:
-            self.lr_schedule = self.actor_lr_schedule
+        self.actor_lr_schedule = get_schedule_fn(self.lr_actor)
+        self.std_lr_schedule = get_schedule_fn(self.lr_std)
+        self.critic_lr_schedule = get_schedule_fn(self.lr_critic)
+        self.lr_schedule = (self.actor_lr_schedule, self.std_lr_schedule, self.critic_lr_schedule)
+
 
     def _create_aliases(self) -> None:
         pass
@@ -213,7 +210,7 @@ class ACERAX(OffPolicyAlgorithm):
         self._update_learning_rate()
 
         losses = []
-        actor_losses, critic_losses = [], []
+        actor_losses, critic_losses, std_losses = [], [], []
         sums = []
         action_mean_losses = []
         for _ in range(gradient_steps):
@@ -291,11 +288,16 @@ class ACERAX(OffPolicyAlgorithm):
             critic_loss = critic_loss.mean()
             dispersion_loss = self._dispersion_loss(replay_data.actions, replay_data.action_means)
 
-            actor_loss += dispersion_loss
+            self.policy.actor.optimizer_std.zero_grad()
+            dispersion_loss.backward()
+            self.policy.actor.optimizer_std.step()
+
             self.policy.actor.optimizer.zero_grad()
             actor_loss.backward()
-            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.actor.optimizer.step()
+
+
 
             self.policy.critic.optimizer.zero_grad()
             critic_loss.backward()
@@ -303,6 +305,7 @@ class ACERAX(OffPolicyAlgorithm):
 
             critic_losses.append(critic_loss.item())
             actor_losses.append(actor_loss.item())
+            std_losses.append(dispersion_loss.item())
             sums.append(SUM.mean().item())
 
         # Increase update counter
@@ -311,6 +314,7 @@ class ACERAX(OffPolicyAlgorithm):
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/critic_loss", np.mean(critic_losses))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/std_loss", np.mean(std_losses))
 
     def _dispersion_loss(self, actions: np.array, m: np.array) -> th.Tensor:
         mean, log_std, _ = self.policy.actor.get_action_dist_params(th.tensor(self._last_obs).to(self.device))

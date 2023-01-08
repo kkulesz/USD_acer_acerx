@@ -3,7 +3,7 @@ import gym
 import time
 # from acer.acer_classic import ACER
 from acer.other_group.acer import ACER
-# from acer.acer import ACER
+from acer.acer import ACER
 from acer.other_group.acerax import ACERAX
 from stable_baselines3.a2c import A2C
 from stable_baselines3.ppo import PPO
@@ -16,8 +16,8 @@ def main():
     print(torch.__version__)
     print(gym.__version__)
 
-    train_model(model_path='acerax_ant', algorithm=ACERAX, policy="MlpPolicy", use_wandb=True)
-    visualize_model(saved_model_path='acerax_ant', algorithm=ACERAX)
+    train_model(model_path='acerax_ant', algorithm=ACER, policy="MlpPolicy", use_wandb=False)
+    visualize_model(saved_model_path='acerax_ant', algorithm=ACER)
 
 
 

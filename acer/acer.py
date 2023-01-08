@@ -14,7 +14,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Rollout
     TrainFrequencyUnit
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
-from .policies import ActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from .acer_utils.replay_buffer import ACERReplayBuffer
 
 from torch.utils.tensorboard import SummaryWriter
@@ -33,7 +33,11 @@ def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -
 
 
 class ACER(OffPolicyAlgorithm):
-    # defaultowe parametry ustawić
+
+    policy_aliases: Dict[str, Type[BasePolicy]] = {
+        "MlpPolicy": ActorCriticPolicy,
+    }
+
     def __init__(
             self,
             policy: Union[str, Type[ActorCriticPolicy]],
@@ -66,7 +70,6 @@ class ACER(OffPolicyAlgorithm):
         super(ACER, self).__init__(
             policy,
             env,
-            ActorCriticPolicy,
             learning_rate=learning_rate,
             buffer_size=buffer_size,
             learning_starts=learning_starts,

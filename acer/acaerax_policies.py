@@ -2,7 +2,6 @@ from stable_baselines3.common.policies import (
     ActorCriticCnnPolicy,
     ActorCriticPolicy,
     MultiInputActorCriticPolicy,
-    register_policy,
 )
 
 from functools import partial
@@ -153,11 +152,3 @@ class ACERAXActorCriticPolicy(ActorCriticPolicy):
         features = self.extract_features(obs)
         dispersion = self.dispersion_net(features)
         return dispersion
-
-MlpPolicy = ACERAXActorCriticPolicy
-CnnPolicy = ActorCriticCnnPolicy
-MultiInputPolicy = MultiInputActorCriticPolicy
-
-register_policy("ACERAXMlpPolicy", MlpPolicy)
-register_policy("CnnPolicy", ActorCriticCnnPolicy)
-register_policy("MultiInputPolicy", MultiInputPolicy)

@@ -5,7 +5,7 @@ import gym
 import numpy as np
 import torch as th
 from torch import nn
-from torch.nn import functional as F
+import math
 
 from copy import deepcopy
 from acer.acer_utils.replay_buffer_trajectories import ACERReplayBuffer
@@ -108,9 +108,6 @@ class ACER(OffPolicyAlgorithm):
         ] = ACERReplayBuffer,
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
-        exploration_fraction: float = 0.1,
-        exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.05,
         max_grad_norm: float = 1.0,
         tensorboard_log: Optional[str] = None,
         create_eval_env: bool = False,
@@ -120,21 +117,18 @@ class ACER(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
     ):
-        print(policy_kwargs)
-        policy_kwargs = {"log_std_init": 0.6}
+        policy_kwargs = {"log_std_init": math.log(0.6)}
         super().__init__(
-            policy,
-            env,
-            ActorCriticPolicy,
-            # (lr_actor, lr_critic),
-            lr_actor,
-            1,
-            learning_starts,
-            batch_size,
-            tau,
-            gamma,
-            train_freq,
-            gradient_steps,
+            policy=policy,
+            env=env,
+            learning_rate=lr_actor,
+            buffer_size=100_000,
+            learning_starts=learning_starts,
+            batch_size=batch_size,
+            tau=tau,
+            gamma=gamma,
+            train_freq=train_freq,
+            gradient_steps=gradient_steps,
             action_noise=None,  # No action noise
             replay_buffer_class=None,
             replay_buffer_kwargs=replay_buffer_kwargs,
@@ -164,28 +158,20 @@ class ACER(OffPolicyAlgorithm):
         self.lr_actor = lr_actor
         self.lr_critic = lr_critic
         self.alpha = alpha
-        self.exploration_initial_eps = exploration_initial_eps
-        self.exploration_final_eps = exploration_final_eps
-        self.exploration_fraction = exploration_fraction
         # For updating the target network with multiple envs:
         self._n_calls = 0
         self.max_grad_norm = max_grad_norm
         # "epsilon" for the epsilon-greedy exploration
         self.exploration_rate = 0.0
-        # Linear schedule will be defined in `_setup_model()`
-        self.exploration_schedule = None
 
         if _init_setup_model:
             self._setup_model()
 
+        self.policy.log_std.requires_grad = False
+
     def _setup_model(self) -> None:
         super()._setup_model()
         self._create_aliases()
-        self.exploration_schedule = get_linear_fn(
-            self.exploration_initial_eps,
-            self.exploration_final_eps,
-            self.exploration_fraction,
-        )
 
     def _setup_lr_schedule(self) -> None:
         """Transform to callable if needed."""
@@ -214,7 +200,6 @@ class ACER(OffPolicyAlgorithm):
         losses = []
         actor_losses, critic_losses = [], []
         sums = []
-        action_mean_losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(
@@ -256,7 +241,6 @@ class ACER(OffPolicyAlgorithm):
                 current_log_probs = current_log_probs.unsqueeze(-1)
 
                 if k == 0:
-                    k0_current_dist = current_dist
                     k0_current_log_probs = current_log_probs
                     k0_current_values = current_values
 
@@ -293,7 +277,16 @@ class ACER(OffPolicyAlgorithm):
                     )
                     SUM += (self.alpha**k) * advantage * clamped_pi_coef
 
-            actor_loss = k0_current_log_probs * SUM
+            k0_current_dist = self.policy.get_distribution(
+                replay_data.observations[:, 0]
+            )
+            dist_mean = th.mean(k0_current_dist.mode(), -1)
+            action_mean_loss = (
+                th.square(th.maximum(th.abs(dist_mean) - 1.0, th.zeros_like(dist_mean)))
+                * 0.1
+            )
+
+            actor_loss = k0_current_log_probs * SUM + action_mean_loss
             actor_loss = actor_loss.mean()
             critic_loss = k0_current_values * SUM
             critic_loss = critic_loss.mean()

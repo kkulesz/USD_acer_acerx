@@ -14,7 +14,7 @@ from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.policies import BasePolicy
 from .acaerax_policies import ACERAXActorCriticPolicy
 from .acer_utils.acerax_replay_buffer import ACERAXReplayBuffer
 
@@ -32,7 +32,10 @@ def get_parameters_by_name(model: th.nn.Module, included_names: Iterable[str]) -
 
 
 class ACERAX(OffPolicyAlgorithm):
-    # defaultowe parametry ustawić
+    policy_aliases: Dict[str, Type[BasePolicy]] = {
+        "MlpPolicy": ACERAXActorCriticPolicy,
+    }
+
     def __init__(
             self,
             policy: Union[str, Type[ACERAXActorCriticPolicy]],
@@ -68,7 +71,6 @@ class ACERAX(OffPolicyAlgorithm):
         super(ACERAX, self).__init__(
             policy,
             env,
-            ActorCriticPolicy,
             learning_rate=learning_rate,
             buffer_size=buffer_size,
             learning_starts=learning_starts,
