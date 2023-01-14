@@ -25,9 +25,6 @@ class ACERAXActorCriticPolicy(ActorCriticPolicy):
     def __init__(
             self,
             *args,
-            std_net_bias: float = -1,
-            weights_multiplier: float = 1e-1,
-            std_net_regularizer: float = 10.0,
             **kwargs
     ):
 
@@ -40,11 +37,6 @@ class ACERAXActorCriticPolicy(ActorCriticPolicy):
         self.latent_dim_dp = 64
 
         self.dispersion_net = nn.Sequential(*dispersion_net).to(self.device)
-
-        # self.std_net_regularizer = std_net_regularizer
-        # self.weights_multiplier = weights_multiplier
-        #
-        # self.std_net_bias = std_net_bias
 
     def _build(self, lr_schedule: Schedule) -> None:
         """

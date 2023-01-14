@@ -1,23 +1,27 @@
 import torch
 import gym
 import time
-# from acer.acer_classic import ACER
-from acer.other_group.acer import ACER
-from acer.acer import ACER
-from acer.other_group.acerax import ACERAX
+from acer.acer_classic import ACER
+# from acer.other_group.acer import ACER
+# from acer.acer import ACER
+# from acer.other_group.acerax import ACERAX
+from acer.other_group.acer2 import ACER
+# from acer.acerax import ACERAX
 from stable_baselines3.a2c import A2C
-from stable_baselines3.ppo import PPO
-from stable_baselines3.sac import SAC
 from stable_baselines3.common.evaluation import evaluate_policy
 import wandb
 from wandb.integration.sb3 import WandbCallback
+
+WANDB_PROJECT = 'usd_acer'
+WANDB_ENTITY = 'bolber'
+
 
 def main():
     print(torch.__version__)
     print(gym.__version__)
 
-    train_model(model_path='acerax_ant', algorithm=ACER, policy="MlpPolicy", use_wandb=False)
-    visualize_model(saved_model_path='acerax_ant', algorithm=ACER)
+    # train_model(model_path='acer_othergroup2_ant', algorithm=ACER, policy="MlpPolicy", use_wandb=True)
+    visualize_model(saved_model_path='acer_othergroup2_ant', algorithm=ACER)
 
 
 
@@ -29,8 +33,8 @@ def train_model(env_name="Ant-v2", model_path="a2c_ant", algorithm=A2C, policy="
     timestamp = time.strftime('%b-%d-%Y_%H%M', t)
     if use_wandb:
         wandb_run = wandb.init(
-            project="usd_acer",
-            entity="bolber",
+            project=WANDB_PROJECT,
+            entity=WANDB_ENTITY,
             sync_tensorboard=True,
             monitor_gym=True,
             save_code=False,

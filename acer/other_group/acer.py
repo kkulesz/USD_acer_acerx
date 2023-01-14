@@ -167,7 +167,7 @@ class ACER(OffPolicyAlgorithm):
         if _init_setup_model:
             self._setup_model()
 
-        self.policy.log_std.requires_grad = False
+        # self.policy.log_std.requires_grad = False
 
     def _setup_model(self) -> None:
         super()._setup_model()

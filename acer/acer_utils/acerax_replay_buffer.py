@@ -7,6 +7,12 @@ from gym import spaces
 
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.buffers import ReplayBuffer
+try:
+    # Check memory used by replay buffer when possible
+    import psutil
+except ImportError:
+    psutil = None
+
 
 
 class ACERAXReplayBufferSamples(NamedTuple):
@@ -138,8 +144,7 @@ class ACERAXReplayBuffer(ReplayBuffer):
             self.full = True
             self.pos = 0
 
-    def sample(self, batch_size: int, trajectory_lens: int,
-               env: Optional[VecNormalize] = None) -> ACERAXReplayBufferSamples:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ACERAXReplayBufferSamples:
         """
         Sample elements from the replay buffer.
         Custom sampling when using memory efficient variant,

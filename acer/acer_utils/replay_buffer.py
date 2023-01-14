@@ -139,6 +139,38 @@ class ACERReplayBuffer(ReplayBuffer):
             self.full = True
             self.pos = 0
 
+    def sample(self, n_batches: int, trajectory_len: int) -> Tuple[ACERReplayBufferSamples, np.ndarray]:
+        if self.size() == 0:
+            # empty buffer
+            return ACERReplayBufferSamples(th.zeros((n_batches, 0)),
+                                           th.zeros((n_batches, 0)),
+                                           th.zeros((n_batches, 0)),
+                                           th.zeros((n_batches, 0)),
+                                           th.zeros((n_batches, 0)),
+                                           th.zeros((n_batches, 0))), np.repeat(-1, n_batches)
+
+        sample_indices = np.random.randint(low=0, high=self.size(), size=n_batches)
+
+        lens = np.repeat(trajectory_len, n_batches)
+        pointer_ind = np.logical_and(sample_indices < self.pos, self.pos < sample_indices + lens)
+        lens[pointer_ind] = self.pos - sample_indices[pointer_ind]
+
+        if self.size() < self.buffer_size:
+            current_size_ind = np.logical_and(sample_indices + lens > self.size(),
+                                              self.size() < self.buffer_size)
+            lens[current_size_ind] = self.size() - sample_indices[current_size_ind]
+
+        pointer_ovf_ind = np.logical_and(sample_indices + lens > self.buffer_size,
+                                         self.pos < sample_indices + lens - self.buffer_size)
+        lens[pointer_ovf_ind] = (self.pos + self.buffer_size) - sample_indices[pointer_ovf_ind]
+
+        selection = (np.repeat(np.expand_dims(sample_indices, 1), trajectory_len, axis=1) + np.arange(trajectory_len))
+        selection = selection % self.buffer_size
+
+        batch, lens = self._get_samples(selection, lens)
+
+        return batch, lens
+
     def _get_samples(self, batch_inds: np.ndarray, lens: np.ndarray, env: Optional[VecNormalize] = None) -> Tuple[
         ACERReplayBufferSamples, th.Tensor]:
         # Sample randomly the env idx
@@ -172,34 +204,4 @@ class ACERReplayBuffer(ReplayBuffer):
 
         return ACERReplayBufferSamples(*tuple(map(self.to_torch, data))), self.to_torch(lens)
 
-    def sample(self, length: int, trajectory_len: int) -> Tuple[ACERReplayBufferSamples, np.ndarray]:
-        if self.size() == 0:
-            # empty buffer
-            return ACERReplayBufferSamples(th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0)),
-                                           th.zeros((length, 0))), np.repeat(-1, length)
 
-        sample_indices = np.random.randint(low=0, high=self.size(), size=length)
-
-        lens = np.repeat(trajectory_len, length)
-        pointer_ind = np.logical_and(sample_indices < self.pos, self.pos < sample_indices + lens)
-        lens[pointer_ind] = self.pos - sample_indices[pointer_ind]
-
-        if self.size() < self.buffer_size:
-            current_size_ind = np.logical_and(sample_indices + lens > self.size(),
-                                              self.size() < self.buffer_size)
-            lens[current_size_ind] = self.size() - sample_indices[current_size_ind]
-
-        pointer_ovf_ind = np.logical_and(sample_indices + lens > self.buffer_size,
-                                         self.pos < sample_indices + lens - self.buffer_size)
-        lens[pointer_ovf_ind] = (self.pos + self.buffer_size) - sample_indices[pointer_ovf_ind]
-
-        selection = (np.repeat(np.expand_dims(sample_indices, 1), trajectory_len, axis=1) + np.arange(trajectory_len))
-        selection = selection % self.buffer_size
-
-        batch, lens = self._get_samples(selection, lens)
-
-        return batch, lens

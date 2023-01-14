@@ -142,6 +142,7 @@ class ACER(OffPolicyAlgorithm):
             old_policies_masked = replay_data.action_probs * mask + (~mask) * th.ones_like(replay_data.action_probs)
 
             policies_ratio = th.exp(policies_masked - old_policies_masked)
+            policies_ratio = th.clamp(policies_ratio, 0.001, 10000)
             policies_ratio_prod = th.cumprod(policies_ratio, dim=-1)
 
             truncated_density = th.tanh(policies_ratio_prod / self._b) * self._b

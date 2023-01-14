@@ -115,26 +115,23 @@ class ACER(OffPolicyAlgorithm):
             values, log_prob, _ = self.policy.evaluate_actions(replay_data.observations, replay_data.actions)
 
             policies_ratio = th.exp(log_prob) / th.exp(replay_data.action_probs)
-
-            b_tensor = th.ones_like(policies_ratio) * self._b
-            truncated_densities = th.minimum(policies_ratio, b_tensor)
-
+            truncated_densities = th.clamp(policies_ratio, 0.001, self._b)
             gamma_coeffs = th.ones_like(truncated_densities) * self.gamma
 
 
             # to jest bardziej zgodne z wzorcową implementacją ale nie działa
-            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
-            #     1) * truncated_densities
-            # d_coeffs = th.sum(d_coeffs.detach())
-            # actor_loss = th.mean(log_prob * d_coeffs)
-            # critic_loss = th.mean(-values * d_coeffs)
+            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
+                1) * truncated_densities
+            d_coeffs = th.sum(d_coeffs.detach())
+            actor_loss = th.mean(log_prob * d_coeffs)
+            critic_loss = th.mean(values * d_coeffs)
 
 
             # to jest niepoprawne ale jakoś działa
-            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
-            d = th.sum(d_coeffs, dim=1)
-            actor_loss = th.mean(-replay_data.action_probs * d)
-            critic_loss = th.mean(values * d)
+            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
+            # d = th.sum(d_coeffs, dim=1)
+            # actor_loss = th.mean(-replay_data.action_probs * d)
+            # critic_loss = th.mean(values * d)
 
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
@@ -154,13 +151,6 @@ class ACER(OffPolicyAlgorithm):
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
 
-    def _actor_loss(self, log_probs: th.Tensor, d: th.Tensor) -> th.Tensor:
-        total_loss = th.mean(-log_probs * d)
-        return total_loss
-
-    def _critic_loss(self, values: th.Tensor, d: th.Tensor) -> th.Tensor:
-        loss = th.mean(values * d)
-        return loss
 
     def learn(
             self,

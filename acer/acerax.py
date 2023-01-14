@@ -63,10 +63,6 @@ class ACERAX(OffPolicyAlgorithm):
             c: int = 10,
             c0: float = 0.3,
             alpha_loss: float = 1.,
-            std_net_bias: float = -1,
-            weights_multiplier: float = 1e-1,
-            std_net_regularizer: float = 10.0,
-            actor_layers_std=20
     ):
         super(ACERAX, self).__init__(
             policy,
@@ -97,9 +93,6 @@ class ACERAX(OffPolicyAlgorithm):
         self._c = c
         self._c0 = c0
         self.alpha_loss = alpha_loss
-        self.std_net_bias = std_net_bias
-        self.std_net_regularizer = std_net_regularizer
-        self.weights_multiplier = weights_multiplier
         print(self.train_freq)
         if _init_setup_model:
             self._setup_model()
@@ -124,30 +117,23 @@ class ACERAX(OffPolicyAlgorithm):
             policies = th.exp(log_prob)
 
             policies_ratio = policies / th.exp(replay_data.action_probs)
-            # policies_ratio_product = th.cumprod(policies_ratio, dim=1)
-
+            policies_ratio = th.clamp(policies_ratio, 0.001, 10000)
             b_tensor = th.ones_like(policies_ratio) * self._b
             truncated_densities = th.minimum(policies_ratio, b_tensor)
 
             gamma_coeffs = th.ones_like(truncated_densities) * self.gamma
-            # gamma_coeffs = th.cumprod(gamma_coeffs, dim=1)
 
+            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(
+                1) * truncated_densities
+            d_coeffs = th.sum(d_coeffs.detach())
+            actor_loss = th.mean(log_prob * d_coeffs)
+            critic_loss = th.mean(values * d_coeffs)
 
-            # d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values).squeeze(1) * truncated_densities
-            # # d = th.sum(d_coeffs, dim=1)
-            # actor_loss = self._actor_loss(replay_data.observations, replay_data.action_probs, d_coeffs)
-            # critic_loss = self._critic_loss(values, d_coeffs)
-
-            d_coeffs = gamma_coeffs * (replay_data.rewards + self.gamma * values_next - values) * truncated_densities
-
-            d = th.sum(d_coeffs, dim=1)
-            actor_loss = self._actor_loss(replay_data.observations, replay_data.action_probs, d)
-            critic_loss = self._critic_loss(values, d)
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
 
-            dispersion_loss = self._dispersion_loss(replay_data.observations, replay_data.actions, replay_data.means)
-            loss = actor_loss + critic_loss
+            dispersion_loss = self._dispersion_loss(replay_data.observations.detach(), replay_data.actions.detach(), replay_data.means.detach())
+            loss = actor_loss + critic_loss + dispersion_loss
 
             # Optimization step
             self.policy.optimizer.zero_grad()
@@ -175,28 +161,6 @@ class ACERAX(OffPolicyAlgorithm):
         total_loss = no_alpha + alpha * with_alpha + (1 + alpha) * th.sum(std)
         return total_loss
 
-
-    def _actor_loss(self, observations: th.Tensor, log_probs: th.Tensor, d: th.Tensor) -> th.Tensor:
-        # mean = self.policy.get_distribution(observations).mean_actions
-        # print(log_probs.shape, d.shape)
-        # out_of_bound_error = th.zeros_like(mean)
-        # out_of_bound_error[mean > self.action_space.high] = mean[mean > self.action_space.high] - self.action_space.high
-        # out_of_bound_error[mean < self.action_space.low] = self.action_space.low - mean[mean < self.action_space.low]
-        # bounds_penalty = th.sum(
-        #                     th.square(
-        #                         th.maximum(th.tensor(0.), out_of_bound_error)
-        #                     ) * 0.001, dim=1
-        #                 ) # scale actions so this is not necessary
-
-        # total_loss = th.mean(-log_probs*d + bounds_penalty)
-
-        total_loss = th.mean(-log_probs * d)
-        return total_loss
-
-
-    def _critic_loss(self, values: th.Tensor, d: th.Tensor) -> th.Tensor:
-        loss = th.mean(values * d)
-        return loss
 
     def learn(
             self,
