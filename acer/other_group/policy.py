@@ -86,7 +86,6 @@ class Actor(BasePolicy):
         self.use_expln = use_expln
         self.full_std = full_std
         self.clip_mean = clip_mean
-        print(f"aaLOG INIT {log_std_init}")
         if sde_net_arch is not None:
             warnings.warn(
                 "sde_net_arch is deprecated and will be removed in SB3 v2.4.0.",

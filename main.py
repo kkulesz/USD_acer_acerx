@@ -5,7 +5,6 @@ from acer.acer_classic import ACER
 # from acer.other_group.acer import ACER
 # from acer.acer import ACER
 # from acer.other_group.acerax import ACERAX
-from acer.other_group.acer2 import ACER
 # from acer.acerax import ACERAX
 from stable_baselines3.a2c import A2C
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -20,7 +19,7 @@ def main():
     print(torch.__version__)
     print(gym.__version__)
 
-    # train_model(model_path='acer_othergroup2_ant', algorithm=ACER, policy="MlpPolicy", use_wandb=True)
+    train_model(model_path='acer_othergroup2_ant', algorithm=ACER, policy="MlpPolicy", use_wandb=False)
     visualize_model(saved_model_path='acer_othergroup2_ant', algorithm=ACER)
 
 
